@@ -27,6 +27,7 @@ Diese Version ist auf Bürgeranfragen bei einer **Gemeinde** ausgelegt.
   - System Prompt
   - Routing-Prompt-Template
   - Antwort-Prompt-Template
+  - Kontextmodus (optional: letzte X Anfragen + Korrekturen im OpenAI-Prompt)
 - **Dokumenten-/Wissensspeicher per API (ohne UI)**:
   - Öffnungszeiten
   - aktuelle Schließungen
@@ -70,3 +71,15 @@ curl -sS -X POST http://localhost:3000/api/documents \
     "content": "Am 14.05. kommt es wegen eines Warnstreiks zu Verzögerungen bei Außendiensten."
   }'
 ```
+
+
+## PR auf GitHub veröffentlichen (ohne Terminal)
+
+1. Öffne das Repository auf GitHub.
+2. Wechsle in den Tab **Pull requests**.
+3. Klicke auf **New pull request**.
+4. Wähle als Vergleich die gewünschte Branch-Kombination (z. B. `main` <- `work`).
+5. Prüfe die Änderungen unter **Files changed**.
+6. Klicke auf **Create pull request** und bestätige mit Titel/Beschreibung.
+
+Hinweis: Wenn GitHub "merge conflicts" zeigt, zuerst auf **Resolve conflicts** klicken und danach den PR erneut speichern.

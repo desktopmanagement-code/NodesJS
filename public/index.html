@@ -91,8 +91,21 @@
       <textarea id="systemPrompt" rows="4"></textarea>
       <label for="routingPromptTemplate">Routing-Prompt (nutzt {{groups}} und {{emailText}})</label>
       <textarea id="routingPromptTemplate" rows="4"></textarea>
-      <label for="replyPromptTemplate">Antwort-Prompt (nutzt {{group}}, {{emailText}} und {{knowledgeContext}})</label>
+      <label for="replyPromptTemplate">Antwort-Prompt (nutzt {{group}}, {{emailText}}, {{knowledgeContext}}, {{historyContext}})</label>
       <textarea id="replyPromptTemplate" rows="5"></textarea>
+      <div class="result-grid single-row">
+        <div>
+          <label for="contextModeEnabled">Kontextmodus (letzte Fälle für OpenAI)</label>
+          <select id="contextModeEnabled">
+            <option value="false">Deaktiviert</option>
+            <option value="true">Aktiviert</option>
+          </select>
+        </div>
+        <div>
+          <label for="contextItems">Anzahl Verlaufseinträge (X)</label>
+          <input id="contextItems" type="number" min="1" max="20" />
+        </div>
+      </div>
       <button id="saveAiConfigBtn">KI-Konfiguration speichern</button>
       <p id="configStatus"></p>
     </section>

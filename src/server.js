@@ -36,7 +36,9 @@ const defaultDb = {
     maxTokens: 450,
     systemPrompt: 'Du bist Assistenz einer deutschen Gemeindeverwaltung. Ordne Bürgeranfragen der passenden Stelle zu und verfasse eine höfliche, klare Erstantwort.',
     routingPromptTemplate: 'Wähle genau eine Zielgruppe aus der Liste: {{groups}}. Entscheide semantisch (z.B. Ehelichung => Standesamt), nicht nur über exakte Keywords. Anfrage:\n{{emailText}}',
-    replyPromptTemplate: 'Du beantwortest eine Anfrage für die Gruppe {{group}}. Nutze bekannte Informationen aus den Dokumenten (wenn passend) und nenne sonst die nächsten Schritte. Anfrage:\n{{emailText}}\n\nKontextdokumente:\n{{knowledgeContext}}'
+    replyPromptTemplate: 'Du beantwortest eine Anfrage für die Gruppe {{group}}. Nutze bekannte Informationen aus den Dokumenten (wenn passend) und nenne sonst die nächsten Schritte. Anfrage:\n{{emailText}}\n\nKontextdokumente:\n{{knowledgeContext}}\n\nVerlaufskontext (optional):\n{{historyContext}}',
+    contextModeEnabled: false,
+    contextItems: 5
   },
   counters: { analysis: 1, feedback: 1, group: 7, document: 2 }
 };
@@ -98,6 +100,20 @@ function getRelevantKnowledge(emailText, documents) {
     .map((item) => item.doc);
 }
 
+function buildHistoryContext(db, limit = 5) {
+  const capped = Math.max(1, Math.min(Number(limit) || 5, 20));
+  const recentAnalyses = (db.analyses || []).slice(-capped).reverse();
+  if (recentAnalyses.length === 0) return 'Kein Verlauf vorhanden.';
+
+  return recentAnalyses.map((analysis, idx) => {
+    const linkedFeedback = (db.feedback || []).filter((f) => Number(f.analysisId) === Number(analysis.id));
+    const feedbackText = linkedFeedback.length > 0
+      ? linkedFeedback.map((f) => `Rating: ${f.rating || '-'}, Korrektur Gruppe: ${f.correctionGroup || '-'}, Korrektur Antwort: ${f.correctionResponse || '-'}, Kommentar: ${f.note || '-'}`).join(' || ')
+      : 'Kein Feedback';
+    return `${idx + 1}) Anfrage: ${analysis.emailText}\n   Zugeordnet: ${analysis.predictedGroup}\n   Antwort: ${analysis.generatedResponse}\n   Feedback: ${feedbackText}`;
+  }).join('\n\n');
+}
+
 function openAIHeaders(apiKey) {
   return {
     'Content-Type': 'application/json',
@@ -105,7 +121,7 @@ function openAIHeaders(apiKey) {
   };
 }
 
-async function classifyGroupWithOpenAI(emailText, routingGroups, aiConfig) {
+async function classifyGroupWithOpenAI(emailText, routingGroups, aiConfig, historyContext) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error('OPENAI_API_KEY fehlt.');
 
@@ -123,7 +139,7 @@ async function classifyGroupWithOpenAI(emailText, routingGroups, aiConfig) {
       temperature: 0,
       messages: [
         { role: 'system', content: aiConfig.systemPrompt },
-        { role: 'user', content: `${userPrompt}\n\nGib nur JSON zurück: {"group":"...","reason":"..."}` }
+        { role: 'user', content: `${userPrompt}\n\nVerlaufskontext:\n${historyContext}\n\nGib nur JSON zurück: {"group":"...","reason":"..."}` }
       ],
       response_format: { type: 'json_object' }
     })
@@ -150,7 +166,7 @@ function generateRuleBasedReply(emailText, group, knowledgeDocuments = []) {
   return `Guten Tag,\n\nvielen Dank für Ihre Nachricht an die Gemeinde. Ihr Anliegen wurde der Gruppe "${group}" zugeordnet und wird dort geprüft.\n\nFalls Unterlagen oder Angaben fehlen, melden wir uns kurzfristig bei Ihnen.\n\nIhre Anfrage (Kurzfassung): "${preview}${emailText.length > 220 ? '…' : ''}"${docsHint}\n\nFreundliche Grüße\nGemeindeverwaltung`;
 }
 
-async function generateOpenAIReply(emailText, group, aiConfig, relevantKnowledge) {
+async function generateOpenAIReply(emailText, group, aiConfig, relevantKnowledge, historyContext) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error('OPENAI_API_KEY fehlt.');
 
@@ -161,7 +177,8 @@ async function generateOpenAIReply(emailText, group, aiConfig, relevantKnowledge
   const userPrompt = interpolate(aiConfig.replyPromptTemplate, {
     emailText,
     group,
-    knowledgeContext
+    knowledgeContext,
+    historyContext
   });
 
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -260,7 +277,8 @@ const server = http.createServer(async (req, res) => {
         ...db.aiConfig,
         ...payload,
         temperature: Number(payload.temperature ?? db.aiConfig.temperature),
-        maxTokens: Number(payload.maxTokens ?? db.aiConfig.maxTokens)
+        maxTokens: Number(payload.maxTokens ?? db.aiConfig.maxTokens),
+        contextItems: Number(payload.contextItems ?? db.aiConfig.contextItems)
       };
       await writeDb(db);
       return sendJson(res, 200, db.aiConfig);
@@ -272,19 +290,22 @@ const server = http.createServer(async (req, res) => {
 
       const db = await readDb();
       const relevantKnowledge = getRelevantKnowledge(emailText, db.knowledgeDocuments || []);
+      const historyContext = db.aiConfig.contextModeEnabled
+        ? buildHistoryContext(db, db.aiConfig.contextItems)
+        : 'Kontextmodus deaktiviert.';
       let group = detectGroupKeywordBased(emailText, db.routingGroups);
       let classificationReason = 'Keyword-basierte Zuordnung';
       let result;
 
       try {
         if (provider === 'openai') {
-          const classification = await classifyGroupWithOpenAI(emailText, db.routingGroups, db.aiConfig);
+          const classification = await classifyGroupWithOpenAI(emailText, db.routingGroups, db.aiConfig, historyContext);
           group = classification.group;
           classificationReason = classification.reason;
 
           result = {
             group,
-            responseText: await generateOpenAIReply(emailText, group, db.aiConfig, relevantKnowledge),
+            responseText: await generateOpenAIReply(emailText, group, db.aiConfig, relevantKnowledge, historyContext),
             providerUsed: 'openai',
             modelNotice: db.aiConfig.openaiModel,
             classificationReason

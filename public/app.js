@@ -6,6 +6,7 @@ const addGroupBtn = byId('addGroupBtn');
 const saveAiConfigBtn = byId('saveAiConfigBtn');
 
 let currentAnalysisId = null;
+let isAnalyzing = false;
 
 async function loadConfig() {
   const response = await fetch('/api/config');
@@ -21,53 +22,75 @@ async function loadConfig() {
   byId('systemPrompt').value = data.aiConfig.systemPrompt;
   byId('routingPromptTemplate').value = data.aiConfig.routingPromptTemplate;
   byId('replyPromptTemplate').value = data.aiConfig.replyPromptTemplate;
+  byId('contextModeEnabled').value = String(Boolean(data.aiConfig.contextModeEnabled));
+  byId('contextItems').value = Number(data.aiConfig.contextItems || 5);
 }
 
 analyzeBtn.addEventListener('click', async () => {
+  if (isAnalyzing) return;
+
   const emailText = byId('emailText').value.trim();
   if (!emailText) {
     byId('status').textContent = 'Bitte zuerst eine Anfrage eingeben.';
     return;
   }
 
-  const response = await fetch('/api/analyze', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ emailText, provider: byId('provider').value })
-  });
-  const data = await response.json();
+  isAnalyzing = true;
+  analyzeBtn.disabled = true;
+  byId('status').textContent = 'Analysiere Anfrage...';
 
-  if (!response.ok) {
-    byId('status').textContent = data.error || 'Analyse fehlgeschlagen.';
-    return;
+  try {
+    const response = await fetch('/api/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ emailText, provider: byId('provider').value })
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      byId('status').textContent = data.error || 'Analyse fehlgeschlagen.';
+      return;
+    }
+
+    currentAnalysisId = data.analysisId;
+    byId('groupOutput').value = data.group;
+    byId('responseOutput').value = data.responseText;
+    byId('modelNotice').textContent = `${data.providerUsed} (${data.modelNotice})`;
+    byId('resultSection').classList.remove('hidden');
+    byId('status').textContent = 'Analyse abgeschlossen.';
+  } catch (error) {
+    byId('status').textContent = `Analyse fehlgeschlagen: ${error.message}`;
+  } finally {
+    isAnalyzing = false;
+    analyzeBtn.disabled = false;
   }
-
-  currentAnalysisId = data.analysisId;
-  byId('groupOutput').value = data.group;
-  byId('responseOutput').value = data.responseText;
-  byId('modelNotice').textContent = `${data.providerUsed} (${data.modelNotice})`;
-  byId('resultSection').classList.remove('hidden');
-  byId('status').textContent = 'Analyse abgeschlossen.';
 });
 
 saveFeedbackBtn.addEventListener('click', async () => {
-  if (!currentAnalysisId) return;
+  if (!currentAnalysisId) {
+    byId('status').textContent = 'Bitte zuerst eine Analyse durchführen.';
+    return;
+  }
 
-  const payload = {
-    analysisId: currentAnalysisId,
-    rating: byId('rating').value,
-    correctionGroup: byId('groupCorrection').value,
-    correctionResponse: byId('responseCorrection').value,
-    note: byId('note').value
-  };
+  try {
+    const payload = {
+      analysisId: currentAnalysisId,
+      rating: byId('rating').value,
+      correctionGroup: byId('groupCorrection').value,
+      correctionResponse: byId('responseCorrection').value,
+      note: byId('note').value
+    };
 
-  const response = await fetch('/api/feedback', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-  const data = await response.json();
-  byId('status').textContent = response.ok && data.success ? 'Feedback gespeichert.' : (data.error || 'Fehler beim Speichern.');
+    const response = await fetch('/api/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await response.json();
+    byId('status').textContent = response.ok && data.success ? 'Feedback gespeichert.' : (data.error || 'Fehler beim Speichern.');
+  } catch (error) {
+    byId('status').textContent = `Fehler beim Speichern: ${error.message}`;
+  }
 });
 
 addGroupBtn.addEventListener('click', async () => {
@@ -94,7 +117,9 @@ saveAiConfigBtn.addEventListener('click', async () => {
     maxTokens: Number(byId('maxTokens').value),
     systemPrompt: byId('systemPrompt').value,
     routingPromptTemplate: byId('routingPromptTemplate').value,
-    replyPromptTemplate: byId('replyPromptTemplate').value
+    replyPromptTemplate: byId('replyPromptTemplate').value,
+    contextModeEnabled: byId('contextModeEnabled').value === 'true',
+    contextItems: Number(byId('contextItems').value)
   };
 
   const response = await fetch('/api/ai-config', {
