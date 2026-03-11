@@ -1,0 +1,101 @@
+{
+  "analyses": [],
+  "feedback": [],
+  "routingGroups": [
+    {
+      "id": 1,
+      "name": "Bürgerbüro",
+      "keywords": [
+        "öffnungszeiten",
+        "geöffnet",
+        "oeffnungszeiten",
+        "termin",
+        "personalausweis",
+        "reisepass",
+        "meldebescheinigung",
+        "bürgerbüro",
+        "buergerbuero"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Ordnungsamt",
+      "keywords": [
+        "lärm",
+        "parken",
+        "ordnungswidrigkeit",
+        "hund",
+        "genehmigung"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "Bauamt",
+      "keywords": [
+        "bauantrag",
+        "baustelle",
+        "garage",
+        "grundstück",
+        "bebauungsplan"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "Jugend",
+      "keywords": [
+        "jugend",
+        "kind",
+        "ferienprogramm",
+        "kita",
+        "betreuung"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "Gebührenstelle",
+      "keywords": [
+        "gebühr",
+        "kosten",
+        "rechnung",
+        "zahlung",
+        "bescheid"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "Standesamt",
+      "keywords": [
+        "heirat",
+        "ehe",
+        "eheurkunde",
+        "geburt",
+        "geburtsurkunde"
+      ]
+    }
+  ],
+  "knowledgeDocuments": [
+    {
+      "id": 1,
+      "title": "Öffnungszeiten Bürgerbüro",
+      "tags": [
+        "öffnungszeiten",
+        "bürgerbüro"
+      ],
+      "content": "Bürgerbüro: Montag bis Freitag 08:00-12:00, Dienstag zusätzlich 14:00-16:00, Donnerstag zusätzlich 14:00-18:00."
+    }
+  ],
+  "aiConfig": {
+    "openaiModel": "gpt-4o-mini",
+    "temperature": 0.2,
+    "maxTokens": 450,
+    "systemPrompt": "Du bist Assistenz einer deutschen Gemeindeverwaltung. Ordne Bürgeranfragen der passenden Stelle zu und verfasse eine höfliche, klare Erstantwort.",
+    "routingPromptTemplate": "Wähle genau eine Zielgruppe aus der Liste: {{groups}}. Entscheide semantisch (z.B. Ehelichung => Standesamt), nicht nur über exakte Keywords. Anfrage:\n{{emailText}}",
+    "replyPromptTemplate": "Du beantwortest eine Anfrage für die Gruppe {{group}}. Nutze bekannte Informationen aus den Dokumenten (wenn passend) und nenne sonst die nächsten Schritte. Anfrage:\n{{emailText}}\n\nKontextdokumente:\n{{knowledgeContext}}"
+  },
+  "counters": {
+    "analysis": 1,
+    "feedback": 1,
+    "group": 7,
+    "document": 2
+  }
+}
