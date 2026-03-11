@@ -1,0 +1,11 @@
+{
+  "name": "nodesjs-mail-triage",
+  "version": "1.0.0",
+  "description": "Mail routing and first-response assistant with LLM provider selection and feedback capture.",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  }
+}
