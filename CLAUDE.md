@@ -136,22 +136,38 @@ sc stop WebClient && sc start WebClient
 
 ## Architektur: Sync-Ablauf
 
+Der Sync-Daemon unterscheidet zwei Betriebsmodi je nach UDC-State:
+
+### Modus A — Windows 1 dauerhaft verbunden (Normalfall)
+
 ```
 Windows 1 schreibt Datei auf USB-Laufwerk
-        │
-Windows 1 wirft Laufwerk aus ("Sicher entfernen")
-        │
-Pi: UDC-State wechselt von "configured" auf anderes
+        │ (Windows hält das Image offen, UDC-State = "configured")
         │ (binnen ~15 Sekunden)
         ▼
-Pi: mount -o loop data/usb-storage.img data/usb-mount/
+Pi: mount -o loop,ro data/usb-storage.img data/usb-mount/   ← nur lesen
         │
-Pi: sync data/usb-mount/ → data/storage/   (USB-Änderungen → WebDAV)
-Pi: sync data/storage/   → data/usb-mount/ (WebDAV-Änderungen → USB)
+Pi: sync data/usb-mount/ → data/storage/   (neue Dateien von Windows 1)
         │
 Pi: umount data/usb-mount/
         │
 Windows 2 sieht die Datei über WebDAV
+```
+
+> **Einschränkung:** Dateien die Windows 2 per WebDAV ablegt, landen **nicht** auf dem USB-Laufwerk von Windows 1, solange es verbunden ist. Das Image ist read-only gemountet um Korruption zu vermeiden.
+
+### Modus B — Windows 1 hat ausgeworfen
+
+```
+Windows 1 wirft Laufwerk aus → UDC-State ≠ "configured"
+        │ (binnen ~15 Sekunden)
+        ▼
+Pi: mount -o loop,rw data/usb-storage.img data/usb-mount/   ← lesen + schreiben
+        │
+Pi: sync data/usb-mount/ → data/storage/   (USB → WebDAV)
+Pi: sync data/storage/   → data/usb-mount/ (WebDAV → USB)
+        │
+Pi: umount data/usb-mount/
 ```
 
 **Sync-Logik:** Neuere Datei gewinnt (mtime-Vergleich). Keine Löschsynchronisation — gelöschte Dateien auf einer Seite bleiben auf der anderen erhalten.

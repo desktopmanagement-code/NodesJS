@@ -13,8 +13,7 @@ const USB_MOUNT   = path.resolve(process.env.USB_MOUNT   ?? path.join(ROOT, 'dat
 const WEBDAV_DIR  = path.resolve(process.env.STORAGE_DIR ?? path.join(ROOT, 'data/storage'));
 const INTERVAL_MS = Number(process.env.SYNC_INTERVAL ?? '15000');
 
-// Prüft ob Windows 1 das Laufwerk gerade aktiv gemountet hat.
-// UDC-State "configured" = Windows hat es eingebunden und schreibt evtl. gerade.
+// "configured" = Windows hat das Laufwerk aktiv eingebunden und schreibt evtl. gerade.
 async function isWindowsUsing() {
   try {
     const udcs = await fs.readdir('/sys/class/udc');
@@ -37,10 +36,10 @@ async function isAlreadyMounted() {
   }
 }
 
-// Kopiert eine Datei von src nach dest, aber nur wenn src neuer ist.
+// Kopiert src nach dest, aber nur wenn src neuer ist.
 async function syncFile(src, dest) {
   const [srcStat, destStat] = await Promise.allSettled([fs.stat(src), fs.stat(dest)]);
-  if (srcStat.status === 'rejected') return; // Quelle verschwunden
+  if (srcStat.status === 'rejected') return;
 
   const srcMtime = srcStat.value.mtimeMs;
   const destMtime = destStat.status === 'fulfilled' ? destStat.value.mtimeMs : 0;
@@ -49,7 +48,7 @@ async function syncFile(src, dest) {
     await fs.mkdir(path.dirname(dest), { recursive: true });
     await fs.copyFile(src, dest);
     const t = new Date(srcMtime);
-    await fs.utimes(dest, t, t); // Änderungszeit übernehmen
+    await fs.utimes(dest, t, t);
   }
 }
 
@@ -58,20 +57,17 @@ async function syncDirs(srcDir, destDir) {
   try {
     entries = await fs.readdir(srcDir, { withFileTypes: true });
   } catch {
-    return; // Verzeichnis nicht lesbar
+    return;
   }
-
   for (const entry of entries) {
-    if (entry.name.startsWith('.')) continue; // FAT32-Metadateien und hidden files überspringen
-
-    const srcPath = path.join(srcDir, entry.name);
-    const destPath = path.join(destDir, entry.name);
-
+    if (entry.name.startsWith('.')) continue; // FAT32-Metadateien überspringen
+    const src = path.join(srcDir, entry.name);
+    const dest = path.join(destDir, entry.name);
     if (entry.isDirectory()) {
-      await fs.mkdir(destPath, { recursive: true });
-      await syncDirs(srcPath, destPath);
+      await fs.mkdir(dest, { recursive: true });
+      await syncDirs(src, dest);
     } else if (entry.isFile()) {
-      await syncFile(srcPath, destPath);
+      await syncFile(src, dest);
     }
   }
 }
@@ -79,33 +75,38 @@ async function syncDirs(srcDir, destDir) {
 let syncRunning = false;
 
 async function runSync() {
-  if (syncRunning) return; // kein paralleler Sync
+  if (syncRunning) return;
   syncRunning = true;
 
   let mounted = false;
   try {
-    // Image-Datei vorhanden?
-    await fs.access(IMAGE_FILE);
+    await fs.access(IMAGE_FILE); // Image noch nicht erstellt → überspringen
 
-    // Windows nutzt das Laufwerk gerade → überspringen
-    if (await isWindowsUsing()) return;
-
-    // Schon gemountet (vorheriger Sync abgestürzt?) → aufräumen
     if (await isAlreadyMounted()) {
+      // Vorheriger Sync abgestürzt – aufräumen
       await exec(`umount "${USB_MOUNT}"`).catch(() => {});
     }
 
     await fs.mkdir(USB_MOUNT, { recursive: true });
-    await exec(`mount -o loop "${IMAGE_FILE}" "${USB_MOUNT}"`);
-    mounted = true;
 
-    // Beide Richtungen: neuere Datei gewinnt
-    await syncDirs(USB_MOUNT, WEBDAV_DIR); // USB-Laufwerk → WebDAV
-    await syncDirs(WEBDAV_DIR, USB_MOUNT); // WebDAV → USB-Laufwerk
+    const windowsConnected = await isWindowsUsing();
 
-    console.log(`[sync] ${new Date().toISOString().slice(11, 19)} OK`);
+    if (windowsConnected) {
+      // Windows nutzt das Laufwerk aktiv → nur lesend mounten, kein Schreiben ins Image
+      await exec(`mount -o loop,ro "${IMAGE_FILE}" "${USB_MOUNT}"`);
+      mounted = true;
+      await syncDirs(USB_MOUNT, WEBDAV_DIR); // USB → WebDAV (neuere Dateien von Windows 1)
+      console.log(`[sync] ${new Date().toISOString().slice(11, 19)} USB→WebDAV (read-only, Windows verbunden)`);
+    } else {
+      // Windows hat ausgeworfen → beidseitiger Sync möglich
+      await exec(`mount -o loop,rw "${IMAGE_FILE}" "${USB_MOUNT}"`);
+      mounted = true;
+      await syncDirs(USB_MOUNT, WEBDAV_DIR); // USB → WebDAV
+      await syncDirs(WEBDAV_DIR, USB_MOUNT); // WebDAV → USB (Dateien von Windows 2)
+      console.log(`[sync] ${new Date().toISOString().slice(11, 19)} beidseitig (Windows ausgeworfen)`);
+    }
   } catch (err) {
-    if (err.code !== 'ENOENT') { // ENOENT = Image noch nicht erstellt, kein Fehler
+    if (err.code !== 'ENOENT') {
       console.error(`[sync] Fehler: ${err.message}`);
     }
   } finally {
@@ -120,9 +121,11 @@ async function runSync() {
 
 export function startSyncDaemon() {
   console.log(`[sync] Daemon gestartet – Intervall: ${INTERVAL_MS / 1000}s`);
-  console.log(`[sync] Image:   ${IMAGE_FILE}`);
-  console.log(`[sync] WebDAV:  ${WEBDAV_DIR}`);
+  console.log(`[sync] Image:  ${IMAGE_FILE}`);
+  console.log(`[sync] WebDAV: ${WEBDAV_DIR}`);
+  console.log(`[sync] Modus:  Windows verbunden → USB→WebDAV (read-only)`);
+  console.log(`[sync]         Windows ausgeworfen → beidseitig (read-write)`);
 
-  setTimeout(runSync, 3000); // erster Sync nach 3 Sekunden (Gadget-Start abwarten)
+  setTimeout(runSync, 3000);
   setInterval(runSync, INTERVAL_MS);
 }
