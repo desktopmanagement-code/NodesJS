@@ -1,223 +1,200 @@
-# CLAUDE.md — NodesJS Mail Triage
+# CLAUDE.md — Pi WebDAV
 
-## Project Overview
+## Was das Projekt macht
 
-**nodesjs-mail-triage** is a German municipality citizen-inquiry management system. It classifies incoming citizen emails into routing groups (e.g., Bürgerbüro, Ordnungsamt, Standesamt) and generates a polite first-response draft. Classification can be rule-based (keyword scoring) or AI-driven (OpenAI GPT).
+Raspberry Pi erscheint bei Windows per USB als Netzwerkadapter (RNDIS-Gadget). Über diesen USB-Kanal betreibt Node.js einen WebDAV-Server. Windows mappt diesen als Netzlaufwerk — sieht für den Nutzer aus wie ein USB-Stick im Explorer.
 
-**Language note:** The domain, UI labels, prompt templates, default data, and error messages are all in German. Keep them in German. Code identifiers and comments should be in English.
+Kein Browser-UI. Kein npm-Paket. Nur Node.js-Built-ins.
 
 ---
 
-## Repository Layout
+## Verzeichnisstruktur
 
 ```
-NodesJS/
+pi-webdav/
 ├── src/
-│   └── server.js          # Entire backend: HTTP server + all business logic
-├── public/
-│   ├── index.html         # Single-page UI
-│   ├── app.js             # Vanilla JS frontend logic
-│   └── styles.css         # Minimal card-based styling
+│   ├── server.js      # HTTP-Server, startet WebDAV + Auth
+│   ├── webdav.js      # Alle WebDAV-Methoden (RFC 4918)
+│   ├── auth.js        # HTTP Basic Auth (prüft Passwort gegen users.json)
+│   ├── users.js       # Benutzerverwaltung (scrypt-Hash, users.json)
+│   └── cli.js         # Kommandozeilen-Tool für Benutzerverwaltung
+├── setup/
+│   ├── gadget.sh          # Aktiviert USB RNDIS-Gadget via configfs
+│   ├── dnsmasq-usb.conf   # DHCP für usb0-Interface
+│   ├── install.sh         # Richtet systemd-Dienste ein
+│   ├── pi-gadget.service  # systemd: USB-Gadget beim Boot
+│   └── pi-webdav.service  # systemd: Node.js WebDAV-Server
 ├── data/
-│   └── feedback-db.json   # Persistent JSON "database" (auto-created on first run)
-├── package.json
-└── README.md              # German documentation
+│   ├── users.json     # Benutzerdaten (auto-erstellt)
+│   └── storage/       # Geteiltes Verzeichnis (WebDAV-Wurzel)
+└── package.json
 ```
 
 ---
 
 ## Tech Stack
 
-| Layer | Technology |
+| Schicht | Technologie |
 |---|---|
-| Runtime | Node.js (ES modules, `"type": "module"`) |
-| Server | `node:http` — no framework |
-| Frontend | Vanilla HTML / CSS / JS — no frameworks or bundler |
-| Persistence | Single JSON file (`data/feedback-db.json`) |
-| External AI | OpenAI Chat Completions API (optional) |
-| Dependencies | **None** — only Node.js built-ins |
+| Laufzeit | Node.js (ES-Module, `"type": "module"`) |
+| HTTP-Server | `node:http` — kein Framework |
+| Passwort-Hashing | `node:crypto` scrypt |
+| USB-Gadget | Linux configfs / RNDIS |
+| DHCP | dnsmasq |
+| Persistenz | `data/users.json` (Passwörter), `data/storage/` (Dateien) |
+| npm-Pakete | **Keine** |
 
 ---
 
-## Running the Project
+## Server starten
 
 ```bash
-# Production
-npm start
-
-# Development (auto-reload on file change)
-npm run dev
+npm start        # Produktion (Port 80, braucht root)
+npm run dev      # Entwicklung mit Auto-Reload
 ```
 
-The server starts on port `3000` by default (override with `PORT` env var). Open `http://localhost:3000` to use the UI.
+### Umgebungsvariablen
 
-### Environment Variables
-
-| Variable | Required | Default | Purpose |
-|---|---|---|---|
-| `OPENAI_API_KEY` | No | — | Enables OpenAI routing/reply mode |
-| `PORT` | No | `3000` | HTTP listen port |
-
-Without `OPENAI_API_KEY`, the app silently falls back to rule-based mode for all requests — no crash.
-
----
-
-## Architecture
-
-### Request Flow
-
-```
-Browser UI
-  └─► POST /api/analyze { emailText, provider }
-        ├─ provider === 'openai'
-        │    ├─ classifyGroupWithOpenAI()   → OpenAI /chat/completions (json_object)
-        │    └─ generateOpenAIReply()       → OpenAI /chat/completions
-        └─ provider === 'rule-based' (or OpenAI fallback)
-             ├─ detectGroupKeywordBased()
-             └─ generateRuleBasedReply()
-        └─ Persisted to feedback-db.json as an analysis record
-```
-
-### Data Model (`feedback-db.json`)
-
-```jsonc
-{
-  "analyses": [         // Every /api/analyze call appended here
-    {
-      "id": 1,
-      "emailText": "...",
-      "predictedGroup": "Standesamt",
-      "generatedResponse": "...",
-      "llmProvider": "openai | rule-based | rule-based-fallback",
-      "modelNotice": "gpt-4o-mini",
-      "classificationReason": "...",
-      "matchedKnowledgeDocumentIds": [1],
-      "createdAt": "ISO8601"
-    }
-  ],
-  "feedback": [         // User corrections/ratings via /api/feedback
-    {
-      "id": 1,
-      "analysisId": 1,
-      "rating": "good | bad | null",
-      "correctionGroup": "...",
-      "correctionResponse": "...",
-      "note": "...",
-      "createdAt": "ISO8601"
-    }
-  ],
-  "routingGroups": [    // Managed via /api/routing-groups
-    { "id": 1, "name": "Bürgerbüro", "keywords": ["termin", ...] }
-  ],
-  "knowledgeDocuments": [ // Managed via /api/documents
-    { "id": 1, "title": "...", "tags": ["öffnungszeiten"], "content": "..." }
-  ],
-  "aiConfig": {         // Updated via PUT /api/ai-config
-    "openaiModel": "gpt-4o-mini",
-    "temperature": 0.2,
-    "maxTokens": 450,
-    "systemPrompt": "...",
-    "routingPromptTemplate": "...",  // uses {{groups}}, {{emailText}}
-    "replyPromptTemplate": "...",    // uses {{group}}, {{emailText}}, {{knowledgeContext}}, {{historyContext}}
-    "contextModeEnabled": false,
-    "contextItems": 5
-  },
-  "counters": { "analysis": 1, "feedback": 1, "group": 7, "document": 2 }
-}
-```
-
-**Schema migration:** `ensureDb()` runs at startup and merges any existing JSON with `defaultDb` defaults, so adding new fields to `defaultDb` is the correct way to introduce schema changes.
-
----
-
-## API Endpoints
-
-| Method | Path | Body / Notes |
+| Variable | Standard | Bedeutung |
 |---|---|---|
-| `GET` | `/api/config` | Returns `{ routingGroups, aiConfig, knowledgeDocuments }` |
-| `GET` | `/api/documents` | Returns `{ documents: [...] }` |
-| `POST` | `/api/documents` | `{ title, content, tags? }` — creates a knowledge document |
-| `POST` | `/api/routing-groups` | `{ name, keywords? }` — adds a routing group |
-| `PUT` | `/api/ai-config` | Partial update of `aiConfig` fields |
-| `POST` | `/api/analyze` | `{ emailText, provider }` where `provider` is `"openai"` or `"rule-based"` |
-| `POST` | `/api/feedback` | `{ analysisId, rating?, correctionGroup?, correctionResponse?, note? }` |
-| `GET` | `/` | Serves `public/index.html` |
-| `GET` | `/*.js` `/*.css` | Serves from `public/` (path-traversal protected) |
+| `PORT` | `80` | HTTP-Port |
+| `STORAGE_DIR` | `data/storage` | Absoluter Pfad zum Dateiverzeichnis |
 
 ---
 
-## Key Functions (`src/server.js`)
+## Benutzerverwaltung (CLI)
 
-| Function | Purpose |
+```bash
+node src/cli.js add    <benutzer>   # Benutzer anlegen (Passwort wird interaktiv abgefragt)
+node src/cli.js passwd <benutzer>   # Passwort ändern
+node src/cli.js remove <benutzer>   # Benutzer löschen
+node src/cli.js list                # Alle Benutzer anzeigen
+```
+
+Passwörter werden mit scrypt (N=16384, r=8, p=1, 64 Byte) gehasht. Benutzernamen: nur `[a-zA-Z0-9_-]`.
+
+---
+
+## Raspberry Pi einrichten
+
+### Voraussetzungen (einmalig in `/boot/config.txt` bzw. `/boot/firmware/config.txt`)
+
+```
+dtoverlay=dwc2
+```
+
+Und in `/etc/modules`:
+```
+dwc2
+```
+
+Dann neu starten.
+
+### Installation
+
+```bash
+sudo bash setup/install.sh
+```
+
+Das Skript:
+1. Prüft Node.js
+2. Installiert dnsmasq und kopiert `setup/dnsmasq-usb.conf`
+3. Registriert `pi-gadget.service` und `pi-webdav.service` als systemd-Dienste
+
+### Ersten Benutzer anlegen
+
+```bash
+node src/cli.js add admin
+```
+
+### Dienste starten
+
+```bash
+sudo systemctl start pi-gadget
+sudo systemctl start pi-webdav
+```
+
+---
+
+## Windows verbinden
+
+USB-Kabel einstecken → Windows installiert RNDIS-Treiber → Pi bekommt IP `192.168.7.1`.
+
+**CMD als Administrator:**
+
+```bat
+sc start WebClient
+net use Z: http://192.168.7.1/ /user:admin <passwort> /persistent:yes
+```
+
+Falls Fehler `Netzwerkpfad nicht gefunden` → Registry-Fix (einmalig):
+
+```bat
+reg add HKLM\SYSTEM\CurrentControlSet\Services\WebClient\Parameters /v BasicAuthLevel /t REG_DWORD /d 2 /f
+sc stop WebClient && sc start WebClient
+```
+
+---
+
+## Architektur
+
+```
+Windows Explorer / net use
+        │  HTTP Basic Auth + WebDAV (RFC 4918)
+        │  über USB (RNDIS = virtuelles Ethernet)
+        ▼
+   src/server.js          ← startet HTTP-Server, ruft authenticate() auf
+        │
+        ├─► src/auth.js   ← parst Authorization-Header, prüft gegen users.json
+        │
+        └─► src/webdav.js ← verarbeitet WebDAV-Methoden
+                │
+                └─► data/storage/   ← Dateisystem (Wurzel des Laufwerks)
+```
+
+---
+
+## Implementierte WebDAV-Methoden
+
+| Methode | Funktion |
 |---|---|
-| `ensureDb()` | Creates/migrates `feedback-db.json` on startup |
-| `readDb()` / `writeDb()` | Thin wrappers: parse/stringify JSON file |
-| `detectGroupKeywordBased(text, groups)` | Scores each group's keywords against inquiry; returns best group name |
-| `interpolate(template, values)` | Replaces `{{key}}` placeholders in prompt templates |
-| `getRelevantKnowledge(text, docs)` | Tag-based scoring; returns top-3 matching knowledge documents |
-| `buildHistoryContext(db, limit)` | Formats last N analyses + feedback into a prompt context string |
-| `classifyGroupWithOpenAI(...)` | Calls OpenAI with `response_format: json_object`; falls back to keyword-based if JSON is invalid |
-| `generateRuleBasedReply(...)` | Template letter with inquiry preview and optional knowledge hints |
-| `generateOpenAIReply(...)` | Calls OpenAI with configurable model/temperature/tokens |
-| `sendJson(res, status, payload)` | Writes JSON response with correct Content-Type |
-| `readRequestBody(req)` | Collects chunks from the request stream and parses JSON |
+| `OPTIONS` | Fähigkeiten melden (DAV: 1, 2) |
+| `PROPFIND` | Verzeichnis-/Datei-Eigenschaften (Depth 0, 1, infinity) |
+| `GET` / `HEAD` | Datei herunterladen |
+| `PUT` | Datei hochladen (erstellt Verzeichnisse automatisch) |
+| `DELETE` | Datei oder Verzeichnis löschen |
+| `MKCOL` | Verzeichnis erstellen |
+| `MOVE` | Verschieben / Umbenennen |
+| `COPY` | Kopieren (rekursiv) |
+| `LOCK` / `UNLOCK` | Lock-Token für Windows (in-memory, kein echtes Locking) |
+| `PROPPATCH` | Acknowledged ohne Änderung (minimale Implementierung) |
 
 ---
 
-## Coding Conventions
+## Konventionen
 
-- **ES modules only.** Use `import`/`export`; no `require()`.
-- **`__dirname` shim.** Because this is an ES module, use the pattern at the top of `server.js`:
-  ```js
-  const __filename = fileURLToPath(import.meta.url);
-  const __dirname = path.dirname(__filename);
-  ```
-- **No dependencies.** Do not add npm packages unless absolutely necessary. Prefer Node.js built-ins.
-- **Single-file backend.** All server logic lives in `src/server.js`. Do not split into multiple modules without a clear reason.
-- **Async/await throughout.** All async operations use `async/await`; no raw Promises or callbacks.
-- **Counter-based IDs.** New records get `db.counters.<collection>++` as their `id`. Always increment before writing.
-- **Prompt templates use `{{variable}}` syntax** (double curly braces). The `interpolate()` function handles substitution.
-- **German strings.** Error messages sent to the client, default prompt templates, and routing group names are in German.
-- **Path traversal protection.** Static files are blocked if `filePath` doesn't start with `publicDir`.
+- **ES-Module** — nur `import`/`export`, kein `require()`.
+- **`__dirname`-Shim** — `path.dirname(fileURLToPath(import.meta.url))` verwenden.
+- **Keine npm-Pakete** — ausschließlich Node.js-Built-ins.
+- **Pfad-Traversal-Schutz** — `resolvePath()` in `webdav.js` stellt sicher, dass alle Pfade innerhalb von `STORAGE_DIR` bleiben.
+- **Passwörter nie im Klartext** — scrypt-Hash mit zufälligem Salt in `users.json`.
+- **`MS-Author-Via: DAV`-Header** — wichtig für Windows-Kompatibilität, in jedem Response gesetzt.
 
 ---
 
-## OpenAI Integration Details
+## Häufige Aufgaben
 
-- **Routing call:** `temperature: 0` (deterministic), `response_format: { type: 'json_object' }`. Expected response: `{"group":"...", "reason":"..."}`.
-- **Reply call:** Uses `aiConfig.temperature` and `aiConfig.maxTokens` from the DB.
-- **Fallback:** If `classifyGroupWithOpenAI` throws (no API key, network error, bad JSON), `generateRuleBasedReply` is used and `providerUsed` is set to `"rule-based-fallback"`.
-- **History context:** Optionally prepends the last N analyses + feedback into the prompt when `aiConfig.contextModeEnabled` is `true`. This lets the model learn from human corrections.
-- **Knowledge context:** Top-3 documents by tag-match score are injected into the reply prompt.
+### Neues WebDAV-Verzeichnis (anderes Laufwerk)
+`STORAGE_DIR=/mnt/externe-platte node src/server.js`
 
----
+### Log-Ausgabe der Dienste
+```bash
+journalctl -u pi-webdav -f
+journalctl -u pi-gadget -f
+```
 
-## No Tests / No Build Step
-
-There are currently **no automated tests** and **no build process**. The server runs directly from source. When adding tests, use Node.js's built-in `node:test` runner to stay dependency-free.
-
----
-
-## Git Workflow
-
-- Active development branch: `claude/claude-md-docs-ez4GH`
-- Push with: `git push -u origin <branch-name>`
-- Do **not** push to `main` without explicit permission.
-
----
-
-## Common Tasks
-
-### Add a new routing group permanently (default data)
-Edit `defaultDb.routingGroups` in `src/server.js` and bump the initial `counters.group` value.
-
-### Add a new API endpoint
-Add a new `if (req.method === '...' && req.url === '...')` block inside the `http.createServer` callback, before the static-file fallback block.
-
-### Change AI model or prompt defaults
-Edit `defaultDb.aiConfig` in `src/server.js`. Existing databases will receive the new defaults on next startup (via `ensureDb` merge).
-
-### Add a new DB field
-1. Add it to `defaultDb` with its default value.
-2. The `ensureDb` migration will spread it into existing databases automatically.
-3. Read/write it through `readDb()`/`writeDb()` as usual.
+### Gadget manuell testen (ohne Reboot)
+```bash
+sudo bash setup/gadget.sh
+sudo systemctl start pi-webdav
+```

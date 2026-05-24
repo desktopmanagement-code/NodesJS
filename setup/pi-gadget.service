@@ -1,0 +1,17 @@
+[Unit]
+Description=Pi USB RNDIS Gadget
+DefaultDependencies=no
+After=systemd-modules-load.service
+Before=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash {{INSTALL_DIR}}/setup/gadget.sh
+ExecStop=/bin/bash -c '\
+  echo "" > /sys/kernel/config/usb_gadget/pi_webdav/UDC 2>/dev/null; \
+  ip addr flush dev usb0 2>/dev/null; \
+  true'
+
+[Install]
+WantedBy=multi-user.target

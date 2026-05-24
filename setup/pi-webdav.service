@@ -1,0 +1,19 @@
+[Unit]
+Description=Pi WebDAV Server
+After=network.target pi-gadget.service
+Wants=pi-gadget.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory={{INSTALL_DIR}}
+Environment=PORT=80
+Environment=STORAGE_DIR={{INSTALL_DIR}}/data/storage
+ExecStart=/usr/bin/node {{INSTALL_DIR}}/src/server.js
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
