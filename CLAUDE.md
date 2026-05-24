@@ -2,18 +2,18 @@
 
 ## Was das Projekt macht
 
-Raspberry Pi erscheint bei Windows per USB als Netzwerkadapter (RNDIS-Gadget). Über diesen USB-Kanal betreibt Node.js einen WebDAV-Server. Windows mappt diesen als Netzlaufwerk — sieht für den Nutzer aus wie ein USB-Stick im Explorer.
-
-**Zwei Windows-Computer greifen gleichzeitig auf dieselben Dateien zu:**
+Raspberry Pi teilt ein Verzeichnis mit zwei Windows-Computern gleichzeitig:
 
 | | Windows 1 | Windows 2 |
 |---|---|---|
-| Verbindung | USB-Kabel → RNDIS-Adapter | WiFi / Ethernet |
-| URL | `http://192.168.7.1/` | `http://<wlan-ip>/` |
-| Protokoll | WebDAV über USB-Netz | WebDAV über Heimnetz |
-| Pi-Server | **derselbe**, Port 80 | **derselbe**, Port 80 |
+| Verbindung | USB-Kabel | WiFi / Ethernet |
+| Pi erscheint als | USB-Laufwerk (Mass Storage) | WebDAV-Netzlaufwerk |
+| Protokoll | FAT32-Image via g_mass_storage | WebDAV (HTTP, RFC 4918) |
+| Dateien | `data/usb-storage.img` | `data/storage/` |
 
-> **Warum nicht USB-Mass-Storage?** Bei Mass-Storage hat Windows exklusiven Block-Zugriff auf die Partition — der Pi kann nicht gleichzeitig lesen/schreiben (Korruptionsgefahr). RNDIS erstellt stattdessen einen virtuellen Netzwerkadapter über USB: beide Windows-PCs sehen ein Laufwerk, greifen aber über WebDAV zu, das echten simultanen Zugriff erlaubt.
+Ein **Sync-Daemon** hält beide Seiten synchron: sobald Windows 1 das USB-Laufwerk auswirft, mountet der Pi das Image als Loopback, gleicht Änderungen mit `data/storage/` ab und mountet wieder aus.
+
+> **Warum kein RNDIS?** RNDIS (USB-Ethernet-Gadget) würde echten simultanen Zugriff erlauben, funktioniert aber auf manchen Windows-Installationen nicht ohne Treiberinstallation. USB Mass Storage funktioniert auf jedem Windows ohne Treiber.
 
 Kein Browser-UI. Kein npm-Paket. Nur Node.js-Built-ins.
 
@@ -24,20 +24,23 @@ Kein Browser-UI. Kein npm-Paket. Nur Node.js-Built-ins.
 ```
 pi-webdav/
 ├── src/
-│   ├── server.js      # HTTP-Server, startet WebDAV + Auth
+│   ├── server.js      # HTTP-Server, startet WebDAV + Sync-Daemon
+│   ├── sync.js        # Sync-Daemon: USB-Image ↔ WebDAV-Verzeichnis
 │   ├── webdav.js      # Alle WebDAV-Methoden (RFC 4918)
-│   ├── auth.js        # HTTP Basic Auth (prüft Passwort gegen users.json)
-│   ├── users.js       # Benutzerverwaltung (scrypt-Hash, users.json)
-│   └── cli.js         # Kommandozeilen-Tool für Benutzerverwaltung
+│   ├── auth.js        # HTTP Basic Auth
+│   ├── users.js       # Benutzerverwaltung (scrypt-Hash)
+│   └── cli.js         # CLI für Benutzerverwaltung
 ├── setup/
-│   ├── gadget.sh          # Aktiviert USB RNDIS-Gadget via configfs
-│   ├── dnsmasq-usb.conf   # DHCP für usb0-Interface
+│   ├── create-image.sh    # Erstellt FAT32-Image (einmalig)
+│   ├── gadget.sh          # Aktiviert USB Mass Storage via configfs
 │   ├── install.sh         # Richtet systemd-Dienste ein
 │   ├── pi-gadget.service  # systemd: USB-Gadget beim Boot
-│   └── pi-webdav.service  # systemd: Node.js WebDAV-Server
+│   └── pi-webdav.service  # systemd: Node.js WebDAV-Server + Sync
 ├── data/
-│   ├── users.json     # Benutzerdaten (auto-erstellt)
-│   └── storage/       # Geteiltes Verzeichnis (WebDAV-Wurzel)
+│   ├── users.json         # Benutzerdaten (auto-erstellt)
+│   ├── usb-storage.img    # FAT32-Image – Windows 1 sieht das als USB-Stick
+│   ├── usb-mount/         # Temporärer Mountpoint für Sync (leer lassen)
+│   └── storage/           # WebDAV-Wurzel – Windows 2 greift hier zu
 └── package.json
 ```
 
@@ -50,107 +53,80 @@ pi-webdav/
 | Laufzeit | Node.js (ES-Module, `"type": "module"`) |
 | HTTP-Server | `node:http` — kein Framework |
 | Passwort-Hashing | `node:crypto` scrypt |
-| USB-Gadget | Linux configfs / RNDIS |
-| DHCP | dnsmasq |
-| Persistenz | `data/users.json` (Passwörter), `data/storage/` (Dateien) |
+| USB-Gadget | Linux configfs / g_mass_storage |
+| Sync | Node.js setInterval + `mount -o loop` |
+| Persistenz | `data/users.json`, `data/usb-storage.img`, `data/storage/` |
 | npm-Pakete | **Keine** |
 
 ---
 
-## Server starten
+## Erster Start (Reihenfolge)
 
 ```bash
-npm start        # Produktion (Port 80, braucht root)
-npm run dev      # Entwicklung mit Auto-Reload
+# 1. Einmalig: USB-Image erstellen (2 GB FAT32)
+sudo bash setup/create-image.sh
+
+# 2. Installation (systemd-Dienste, Verzeichnisse)
+sudo bash setup/install.sh
+
+# 3. Benutzer für WebDAV anlegen
+node src/cli.js add admin
+
+# 4. Dienste starten
+sudo systemctl start pi-gadget   # USB-Laufwerk aktivieren
+sudo systemctl start pi-webdav   # WebDAV + Sync starten
 ```
-
-### Umgebungsvariablen
-
-| Variable | Standard | Bedeutung |
-|---|---|---|
-| `PORT` | `80` | HTTP-Port |
-| `STORAGE_DIR` | `data/storage` | Absoluter Pfad zum Dateiverzeichnis |
 
 ---
 
 ## Benutzerverwaltung (CLI)
 
 ```bash
-node src/cli.js add    <benutzer>   # Benutzer anlegen (Passwort wird interaktiv abgefragt)
+node src/cli.js add    <benutzer>   # Benutzer anlegen (Passwort interaktiv)
 node src/cli.js passwd <benutzer>   # Passwort ändern
 node src/cli.js remove <benutzer>   # Benutzer löschen
 node src/cli.js list                # Alle Benutzer anzeigen
 ```
 
-Passwörter werden mit scrypt (N=16384, r=8, p=1, 64 Byte) gehasht. Benutzernamen: nur `[a-zA-Z0-9_-]`.
-
 ---
 
 ## Raspberry Pi einrichten
 
-### Voraussetzungen (einmalig in `/boot/config.txt` bzw. `/boot/firmware/config.txt`)
+### Voraussetzungen (einmalig)
 
+In `/boot/config.txt` (ältere Pi OS) bzw. `/boot/firmware/config.txt` (Pi OS Bookworm):
 ```
 dtoverlay=dwc2
 ```
 
-Und in `/etc/modules`:
+In `/etc/modules`:
 ```
 dwc2
 ```
-
 Dann neu starten.
-
-### Installation
-
-```bash
-sudo bash setup/install.sh
-```
-
-Das Skript:
-1. Prüft Node.js
-2. Installiert dnsmasq und kopiert `setup/dnsmasq-usb.conf`
-3. Registriert `pi-gadget.service` und `pi-webdav.service` als systemd-Dienste
-
-### Ersten Benutzer anlegen
-
-```bash
-node src/cli.js add admin
-```
-
-### Dienste starten
-
-```bash
-sudo systemctl start pi-gadget
-sudo systemctl start pi-webdav
-```
 
 ---
 
-## Windows verbinden
+## Windows 1 verbinden (USB)
 
-### Windows 1 — per USB-Kabel
+USB-Kabel einstecken → Windows erkennt automatisch ein neues USB-Laufwerk (`PI_STORAGE`).
+Kein Treiber nötig, kein Einrichten — direkt Dateien hinein- und herauskopieren.
 
-USB-Kabel einstecken → Windows installiert RNDIS-Treiber automatisch → Pi erscheint als USB-Netzwerkadapter → Pi-IP: `192.168.7.1`
+> Dateien sind erst für Windows 2 sichtbar, nachdem Windows 1 das Laufwerk **ausgeworfen** hat und der Pi synchronisiert hat (alle ~15 Sekunden).
 
-**CMD als Administrator:**
-```bat
-sc start WebClient
-net use Z: http://192.168.7.1/ /user:admin <passwort> /persistent:yes
-```
+---
 
-### Windows 2 — per WLAN / Ethernet
+## Windows 2 verbinden (WebDAV)
 
-Pi muss im selben Netzwerk sein. Die IP des Pi auf dem Startbildschirm ablesen (`wlan0` oder `eth0`).
+Pi muss im selben Netzwerk sein. IP des Pi ablesen: `hostname -I`
 
 **CMD als Administrator:**
 ```bat
 sc start WebClient
-net use Y: http://<wlan-ip-des-pi>/ /user:admin <passwort> /persistent:yes
+net use Z: http://<pi-ip>/ /user:admin <passwort> /persistent:yes
 ```
 
-### Registry-Fix (einmalig auf jedem Windows, falls Fehler `Netzwerkpfad nicht gefunden`)
-
+Falls Fehler `Netzwerkpfad nicht gefunden` — Registry-Fix (einmalig):
 ```bat
 reg add HKLM\SYSTEM\CurrentControlSet\Services\WebClient\Parameters /v BasicAuthLevel /t REG_DWORD /d 2 /f
 sc stop WebClient && sc start WebClient
@@ -158,21 +134,39 @@ sc stop WebClient && sc start WebClient
 
 ---
 
-## Architektur
+## Architektur: Sync-Ablauf
 
 ```
-Windows Explorer / net use
-        │  HTTP Basic Auth + WebDAV (RFC 4918)
-        │  über USB (RNDIS = virtuelles Ethernet)
+Windows 1 schreibt Datei auf USB-Laufwerk
+        │
+Windows 1 wirft Laufwerk aus ("Sicher entfernen")
+        │
+Pi: UDC-State wechselt von "configured" auf anderes
+        │ (binnen ~15 Sekunden)
         ▼
-   src/server.js          ← startet HTTP-Server, ruft authenticate() auf
+Pi: mount -o loop data/usb-storage.img data/usb-mount/
         │
-        ├─► src/auth.js   ← parst Authorization-Header, prüft gegen users.json
+Pi: sync data/usb-mount/ → data/storage/   (USB-Änderungen → WebDAV)
+Pi: sync data/storage/   → data/usb-mount/ (WebDAV-Änderungen → USB)
         │
-        └─► src/webdav.js ← verarbeitet WebDAV-Methoden
-                │
-                └─► data/storage/   ← Dateisystem (Wurzel des Laufwerks)
+Pi: umount data/usb-mount/
+        │
+Windows 2 sieht die Datei über WebDAV
 ```
+
+**Sync-Logik:** Neuere Datei gewinnt (mtime-Vergleich). Keine Löschsynchronisation — gelöschte Dateien auf einer Seite bleiben auf der anderen erhalten.
+
+---
+
+## Umgebungsvariablen
+
+| Variable | Standard | Bedeutung |
+|---|---|---|
+| `PORT` | `80` | HTTP-Port (WebDAV) |
+| `STORAGE_DIR` | `data/storage` | WebDAV-Wurzelverzeichnis |
+| `IMAGE_FILE` | `data/usb-storage.img` | Pfad zum FAT32-Image |
+| `USB_MOUNT` | `data/usb-mount` | Mountpoint für Sync |
+| `SYNC_INTERVAL` | `15000` | Sync-Intervall in Millisekunden |
 
 ---
 
@@ -183,13 +177,13 @@ Windows Explorer / net use
 | `OPTIONS` | Fähigkeiten melden (DAV: 1, 2) |
 | `PROPFIND` | Verzeichnis-/Datei-Eigenschaften (Depth 0, 1, infinity) |
 | `GET` / `HEAD` | Datei herunterladen |
-| `PUT` | Datei hochladen (erstellt Verzeichnisse automatisch) |
+| `PUT` | Datei hochladen |
 | `DELETE` | Datei oder Verzeichnis löschen |
 | `MKCOL` | Verzeichnis erstellen |
 | `MOVE` | Verschieben / Umbenennen |
 | `COPY` | Kopieren (rekursiv) |
-| `LOCK` / `UNLOCK` | Lock-Token für Windows (in-memory, kein echtes Locking) |
-| `PROPPATCH` | Acknowledged ohne Änderung (minimale Implementierung) |
+| `LOCK` / `UNLOCK` | Lock-Token für Windows (in-memory) |
+| `PROPPATCH` | Acknowledged ohne Änderung |
 
 ---
 
@@ -198,25 +192,27 @@ Windows Explorer / net use
 - **ES-Module** — nur `import`/`export`, kein `require()`.
 - **`__dirname`-Shim** — `path.dirname(fileURLToPath(import.meta.url))` verwenden.
 - **Keine npm-Pakete** — ausschließlich Node.js-Built-ins.
-- **Pfad-Traversal-Schutz** — `resolvePath()` in `webdav.js` stellt sicher, dass alle Pfade innerhalb von `STORAGE_DIR` bleiben.
-- **Passwörter nie im Klartext** — scrypt-Hash mit zufälligem Salt in `users.json`.
-- **`MS-Author-Via: DAV`-Header** — wichtig für Windows-Kompatibilität, in jedem Response gesetzt.
+- **Pfad-Traversal-Schutz** — `resolvePath()` in `webdav.js` hält alle Pfade innerhalb von `STORAGE_DIR`.
+- **Passwörter nie im Klartext** — scrypt-Hash in `users.json`.
+- **Sync nur bei ausgeworfenem Laufwerk** — `isWindowsUsing()` prüft UDC-State vor jedem Sync.
 
 ---
 
 ## Häufige Aufgaben
 
-### Neues WebDAV-Verzeichnis (anderes Laufwerk)
-`STORAGE_DIR=/mnt/externe-platte node src/server.js`
+### Image-Größe ändern (Neustart nötig)
+```bash
+sudo systemctl stop pi-gadget pi-webdav
+rm data/usb-storage.img
+sudo bash setup/create-image.sh 4096   # 4 GB
+sudo systemctl start pi-gadget pi-webdav
+```
 
-### Log-Ausgabe der Dienste
+### Sync-Intervall anpassen
+`SYNC_INTERVAL=5000` in `setup/pi-webdav.service` → `systemctl daemon-reload && systemctl restart pi-webdav`
+
+### Logs ansehen
 ```bash
 journalctl -u pi-webdav -f
 journalctl -u pi-gadget -f
-```
-
-### Gadget manuell testen (ohne Reboot)
-```bash
-sudo bash setup/gadget.sh
-sudo systemctl start pi-webdav
 ```

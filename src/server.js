@@ -5,10 +5,11 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { authenticate } from './auth.js';
 import { handleWebDAV } from './webdav.js';
+import { startSyncDaemon } from './sync.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const PORT = Number(process.env.PORT) || 80;
+const PORT        = Number(process.env.PORT) || 80;
 const STORAGE_DIR = process.env.STORAGE_DIR
   ? path.resolve(process.env.STORAGE_DIR)
   : path.join(__dirname, '..', 'data', 'storage');
@@ -43,42 +44,35 @@ async function main() {
   });
 
   server.listen(PORT, () => {
-    const ips = getNetworkIPs();
-    const usbIP   = ips.find(({ iface }) => iface === 'usb0')?.ip ?? '192.168.7.1';
-    const wlanIP  = ips.find(({ iface }) => iface.startsWith('wlan'))?.ip;
-    const ethIP   = ips.find(({ iface }) => iface.startsWith('eth'))?.ip;
-    const netIP   = wlanIP ?? ethIP ?? '<pi-netz-ip>';
+    const ips   = getNetworkIPs();
+    const wlanIP = ips.find(({ iface }) => iface.startsWith('wlan'))?.ip;
+    const ethIP  = ips.find(({ iface }) => iface.startsWith('eth'))?.ip;
+    const netIP  = wlanIP ?? ethIP ?? '<pi-netz-ip>';
 
     console.log('');
     console.log('╔══════════════════════════════════════════════════════╗');
     console.log('║              Pi WebDAV  –  gestartet                ║');
     console.log('╠══════════════════════════════════════════════════════╣');
     console.log(`║  Port:     ${String(PORT).padEnd(42)}║`);
-    console.log(`║  Speicher: ${STORAGE_DIR.slice(-42).padEnd(42)}║`);
+    console.log(`║  WebDAV:   ${STORAGE_DIR.slice(-42).padEnd(42)}║`);
     console.log('╠══════════════════════════════════════════════════════╣');
-    console.log('║  Netzwerk-Interfaces:                                ║');
-    if (ips.length === 0) {
-      console.log('║    (noch keine aktiven Interfaces)                   ║');
-    } else {
+    if (ips.length > 0) {
       for (const { iface, ip } of ips) {
-        const label = `    ${iface.padEnd(8)} ${ip}`;
-        console.log(`║  ${label.padEnd(52)}║`);
+        console.log(`║  ${(iface + ':').padEnd(10)} ${ip.padEnd(42)}║`);
       }
+    } else {
+      console.log('║  (keine aktiven Netzwerk-Interfaces)                 ║');
     }
     console.log('╠══════════════════════════════════════════════════════╣');
-    console.log('║  Windows 1 (USB-Kabel → RNDIS):                     ║');
-    console.log(`║    net use Z: http://${usbIP}/ /user:X PW           ║`);
-    console.log('║  Windows 2 (WLAN / Ethernet):                        ║');
-    console.log(`║    net use Z: http://${String(netIP).padEnd(12)}/ /user:X PW           ║`);
+    console.log('║  Windows 1 (USB-Laufwerk):  automatisch erkannt     ║');
+    console.log('║  Windows 2 (WebDAV):                                 ║');
+    console.log(`║    net use Z: http://${String(netIP).padEnd(15)}/ ...         ║`);
     console.log('╚══════════════════════════════════════════════════════╝');
     console.log('');
-
-    if (ips.length === 0 || !ips.find(({ iface }) => iface === 'usb0')) {
-      console.log('⚠  usb0 nicht aktiv — USB-Gadget noch nicht gestartet?');
-      console.log('   sudo systemctl start pi-gadget');
-      console.log('');
-    }
   });
+
+  // Sync-Daemon: hält USB-Image und WebDAV-Verzeichnis synchron
+  startSyncDaemon();
 }
 
 main().catch((err) => {

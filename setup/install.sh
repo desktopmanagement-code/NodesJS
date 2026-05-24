@@ -17,21 +17,17 @@ if ! command -v node &>/dev/null; then
 fi
 echo "Node.js: $(node --version)"
 
-# dnsmasq prüfen / installieren
-if ! command -v dnsmasq &>/dev/null; then
-  echo "Installiere dnsmasq..."
-  apt-get install -y dnsmasq
-fi
-
-# dnsmasq für USB konfigurieren
-cp "$INSTALL_DIR/setup/dnsmasq-usb.conf" /etc/dnsmasq.d/pi-webdav-usb.conf
-systemctl enable dnsmasq
-systemctl restart dnsmasq
-
 # Verzeichnisse anlegen
 mkdir -p "$INSTALL_DIR/data/storage"
+mkdir -p "$INSTALL_DIR/data/usb-mount"
 
-# Systemd-Units installieren (Pfad einsetzen)
+# FAT32-Image erstellen (falls noch nicht vorhanden)
+if [ ! -f "$INSTALL_DIR/data/usb-storage.img" ]; then
+  echo "Erstelle USB-Image (2 GB) – das dauert einen Moment..."
+  bash "$INSTALL_DIR/setup/create-image.sh"
+fi
+
+# Systemd-Units installieren
 sed "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" "$INSTALL_DIR/setup/pi-gadget.service" \
   > /etc/systemd/system/pi-gadget.service
 
@@ -54,13 +50,13 @@ echo "2) Dienste starten:"
 echo "   sudo systemctl start pi-gadget"
 echo "   sudo systemctl start pi-webdav"
 echo ""
-echo "3) Auf Windows (CMD als Administrator):"
-echo "   net use Z: http://192.168.7.1/ /user:admin <passwort> /persistent:yes"
+echo "Windows 1 (USB): Kabel einstecken → Pi erscheint als Laufwerk"
 echo ""
-echo "   Falls Fehler 'Netzwerkpfad nicht gefunden':"
-echo "   Schritt 1: Windows-Dienst 'WebClient' starten:"
-echo "     sc start WebClient"
-echo "   Schritt 2: Registry-Eintrag für HTTP-Authentifizierung:"
-echo "     reg add HKLM\SYSTEM\CurrentControlSet\Services\WebClient\Parameters"
-echo "         /v BasicAuthLevel /t REG_DWORD /d 2 /f"
-echo "     sc stop WebClient && sc start WebClient"
+echo "Windows 2 (WebDAV) – CMD als Administrator:"
+echo "  sc start WebClient"
+echo "  net use Z: http://<pi-ip>/ /user:admin <passwort> /persistent:yes"
+echo ""
+echo "  Falls 'Netzwerkpfad nicht gefunden' (einmalig pro Windows):"
+echo "  reg add HKLM\SYSTEM\CurrentControlSet\Services\WebClient\Parameters"
+echo "      /v BasicAuthLevel /t REG_DWORD /d 2 /f"
+echo "  sc stop WebClient && sc start WebClient"

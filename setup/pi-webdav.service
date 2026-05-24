@@ -9,6 +9,9 @@ User=root
 WorkingDirectory={{INSTALL_DIR}}
 Environment=PORT=80
 Environment=STORAGE_DIR={{INSTALL_DIR}}/data/storage
+Environment=IMAGE_FILE={{INSTALL_DIR}}/data/usb-storage.img
+Environment=USB_MOUNT={{INSTALL_DIR}}/data/usb-mount
+Environment=SYNC_INTERVAL=15000
 ExecStart=/usr/bin/node {{INSTALL_DIR}}/src/server.js
 Restart=on-failure
 RestartSec=5

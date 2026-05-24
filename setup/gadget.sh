@@ -1,16 +1,25 @@
 #!/bin/bash
-# Konfiguriert den Pi als USB RNDIS-Netzwerkadapter.
-# Windows sieht den Pi wie einen USB-Netzwerkadapter und bekommt per DHCP eine IP.
+# Konfiguriert den Pi als USB Mass Storage Gerät (USB-Stick für Windows).
+# Voraussetzung: data/usb-storage.img muss existieren (setup/create-image.sh).
 # Ausführen als root: sudo bash setup/gadget.sh
 set -e
 
+INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+IMAGE="$INSTALL_DIR/data/usb-storage.img"
 GADGET_DIR="/sys/kernel/config/usb_gadget/pi_webdav"
+
+if [ ! -f "$IMAGE" ]; then
+  echo "Fehler: $IMAGE nicht gefunden."
+  echo "Bitte zuerst ausführen: sudo bash setup/create-image.sh"
+  exit 1
+fi
 
 modprobe libcomposite
 
 # Altes Gadget entfernen
 if [ -d "$GADGET_DIR" ]; then
   echo "" > "${GADGET_DIR}/UDC" 2>/dev/null || true
+  sleep 0.5
   rm -rf "$GADGET_DIR"
 fi
 
@@ -28,24 +37,21 @@ echo "Raspberry Pi"      > strings/0x409/manufacturer
 echo "Pi WebDAV"         > strings/0x409/product
 
 mkdir -p configs/c.1/strings/0x409
-echo "RNDIS Config"  > configs/c.1/strings/0x409/configuration
-echo 250             > configs/c.1/MaxPower
+echo "Mass Storage" > configs/c.1/strings/0x409/configuration
+echo 250            > configs/c.1/MaxPower
 
-# RNDIS-Funktion (Windows-kompatibel)
-mkdir -p functions/rndis.usb0
-echo "DE:AD:BE:EF:00:01" > functions/rndis.usb0/host_addr   # Windows-seitige MAC
-echo "DE:AD:BE:EF:00:02" > functions/rndis.usb0/dev_addr    # Pi-seitige MAC
+# Mass Storage Funktion
+mkdir -p functions/mass_storage.usb0
+echo 0          > functions/mass_storage.usb0/stall         # kein STALL-Protokoll
+echo 0          > functions/mass_storage.usb0/lun.0/cdrom
+echo 0          > functions/mass_storage.usb0/lun.0/ro      # read/write
+echo 1          > functions/mass_storage.usb0/lun.0/removable
+echo "$IMAGE"   > functions/mass_storage.usb0/lun.0/file
 
-ln -sf "${GADGET_DIR}/functions/rndis.usb0" configs/c.1/
+ln -sf "${GADGET_DIR}/functions/mass_storage.usb0" configs/c.1/
 
-# Gadget aktivieren (erste verfügbare UDC)
+# Gadget aktivieren
 ls /sys/class/udc | head -1 > UDC
 
-# Netzwerkinterface konfigurieren
-sleep 1
-ip link set usb0 up
-ip addr flush dev usb0
-ip addr add 192.168.7.1/24 dev usb0
-
-echo "Gadget aktiv. Pi-IP: 192.168.7.1"
-echo "Windows bekommt automatisch eine IP im Bereich 192.168.7.x (via dnsmasq)."
+echo "Gadget aktiv. Windows erkennt jetzt ein USB-Laufwerk."
+echo "Image: $IMAGE"
