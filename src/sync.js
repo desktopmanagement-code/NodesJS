@@ -13,7 +13,6 @@ const USB_MOUNT   = path.resolve(process.env.USB_MOUNT   ?? path.join(ROOT, 'dat
 const WEBDAV_DIR  = path.resolve(process.env.STORAGE_DIR ?? path.join(ROOT, 'data/storage'));
 const INTERVAL_MS = Number(process.env.SYNC_INTERVAL ?? '15000');
 
-// "configured" = Windows hat das Laufwerk aktiv eingebunden und schreibt evtl. gerade.
 async function isWindowsUsing() {
   try {
     const udcs = await fs.readdir('/sys/class/udc');
@@ -23,14 +22,13 @@ async function isWindowsUsing() {
         if (state === 'configured') return true;
       } catch { /* einzelner UDC nicht lesbar */ }
     }
-  } catch { /* /sys/class/udc nicht vorhanden (kein Gadget-System) */ }
+  } catch { /* kein Gadget-System */ }
   return false;
 }
 
 async function isAlreadyMounted() {
   try {
-    const mounts = await fs.readFile('/proc/mounts', 'utf-8');
-    return mounts.includes(USB_MOUNT);
+    return (await fs.readFile('/proc/mounts', 'utf-8')).includes(USB_MOUNT);
   } catch {
     return false;
   }
@@ -60,7 +58,7 @@ async function syncDirs(srcDir, destDir) {
     return;
   }
   for (const entry of entries) {
-    if (entry.name.startsWith('.')) continue; // FAT32-Metadateien überspringen
+    if (entry.name.startsWith('.')) continue;
     const src = path.join(srcDir, entry.name);
     const dest = path.join(destDir, entry.name);
     if (entry.isDirectory()) {
@@ -74,37 +72,28 @@ async function syncDirs(srcDir, destDir) {
 
 let syncRunning = false;
 
-async function runSync() {
+async function runSync(reason = 'Intervall') {
   if (syncRunning) return;
   syncRunning = true;
 
   let mounted = false;
   try {
-    await fs.access(IMAGE_FILE); // Image noch nicht erstellt → überspringen
+    await fs.access(IMAGE_FILE);
 
     if (await isAlreadyMounted()) {
-      // Vorheriger Sync abgestürzt – aufräumen
       await exec(`umount "${USB_MOUNT}"`).catch(() => {});
     }
 
     await fs.mkdir(USB_MOUNT, { recursive: true });
 
-    const windowsConnected = await isWindowsUsing();
+    // Immer read-only – wir schreiben nie ins Image zurück.
+    // Sicher selbst wenn Windows 1 das Laufwerk gleichzeitig nutzt.
+    await exec(`mount -o loop,ro "${IMAGE_FILE}" "${USB_MOUNT}"`);
+    mounted = true;
 
-    if (windowsConnected) {
-      // Windows nutzt das Laufwerk aktiv → nur lesend mounten, kein Schreiben ins Image
-      await exec(`mount -o loop,ro "${IMAGE_FILE}" "${USB_MOUNT}"`);
-      mounted = true;
-      await syncDirs(USB_MOUNT, WEBDAV_DIR); // USB → WebDAV (neuere Dateien von Windows 1)
-      console.log(`[sync] ${new Date().toISOString().slice(11, 19)} USB→WebDAV (read-only, Windows verbunden)`);
-    } else {
-      // Windows hat ausgeworfen → beidseitiger Sync möglich
-      await exec(`mount -o loop,rw "${IMAGE_FILE}" "${USB_MOUNT}"`);
-      mounted = true;
-      await syncDirs(USB_MOUNT, WEBDAV_DIR); // USB → WebDAV
-      await syncDirs(WEBDAV_DIR, USB_MOUNT); // WebDAV → USB (Dateien von Windows 2)
-      console.log(`[sync] ${new Date().toISOString().slice(11, 19)} beidseitig (Windows ausgeworfen)`);
-    }
+    await syncDirs(USB_MOUNT, WEBDAV_DIR);
+
+    console.log(`[sync] ${new Date().toISOString().slice(11, 19)} OK (${reason})`);
   } catch (err) {
     if (err.code !== 'ENOENT') {
       console.error(`[sync] Fehler: ${err.message}`);
@@ -112,26 +101,35 @@ async function runSync() {
   } finally {
     if (mounted) {
       await exec(`umount "${USB_MOUNT}"`).catch((e) => {
-        console.error(`[sync] umount fehlgeschlagen: ${e.message}`);
+        console.error(`[sync] umount: ${e.message}`);
       });
     }
     syncRunning = false;
   }
 }
 
+// Erkennt Auswurf (configured → nicht configured) und löst sofort Sync aus.
+let prevConnected = null;
+async function pollUDC() {
+  const connected = await isWindowsUsing();
+  if (prevConnected === true && connected === false) {
+    console.log('[sync] Auswurf erkannt → sofortiger Sync');
+    runSync('Auswurf');
+  }
+  prevConnected = connected;
+}
+
 export function startSyncDaemon() {
   if (process.platform !== 'linux') {
-    console.log('[sync] Nicht Linux – Sync-Daemon deaktiviert (kein mount -o loop verfügbar).');
-    console.log('[sync] WebDAV-Server läuft trotzdem vollständig.');
+    console.log('[sync] Nicht Linux – Sync-Daemon deaktiviert.');
     return;
   }
 
-  console.log(`[sync] Daemon gestartet – Intervall: ${INTERVAL_MS / 1000}s`);
-  console.log(`[sync] Image:  ${IMAGE_FILE}`);
-  console.log(`[sync] WebDAV: ${WEBDAV_DIR}`);
-  console.log(`[sync] Modus:  Windows verbunden → USB→WebDAV (read-only)`);
-  console.log(`[sync]         Windows ausgeworfen → beidseitig (read-write)`);
+  console.log(`[sync] Daemon gestartet`);
+  console.log(`[sync] Richtung:  USB-Image → WebDAV (read-only, nur lesen)`);
+  console.log(`[sync] Intervall: ${INTERVAL_MS / 1000}s  +  sofort bei Auswurf`);
 
-  setTimeout(runSync, 3000);
+  setTimeout(() => runSync('Start'), 3000);
   setInterval(runSync, INTERVAL_MS);
+  setInterval(pollUDC, 2000);  // UDC-State-Check: billig, kein mount nötig
 }
