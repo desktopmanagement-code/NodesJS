@@ -1,12 +1,17 @@
-import { scrypt, randomBytes, timingSafeEqual } from 'node:crypto';
-import { promisify } from 'node:util';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const scryptAsync = promisify(scrypt);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const usersFile = path.join(__dirname, '..', 'data', 'users.json');
+
+export const REALM = 'Pi WebDAV';
+
+// Digest Auth benötigt HA1 = MD5(username:realm:password) serverseitig gespeichert.
+function computeHA1(username, password) {
+  return createHash('md5').update(`${username}:${REALM}:${password}`).digest('hex');
+}
 
 async function readUsers() {
   try {
@@ -21,30 +26,23 @@ async function writeUsers(users) {
   await fs.writeFile(usersFile, JSON.stringify(users, null, 2), 'utf-8');
 }
 
-async function hashPassword(password) {
-  const salt = randomBytes(16).toString('hex');
-  const derived = await scryptAsync(password, salt, 64);
-  return `${salt}:${derived.toString('hex')}`;
+export async function getHA1(username) {
+  const users = await readUsers();
+  return users[username] ?? null;
 }
 
 export async function verifyPassword(username, password) {
   const users = await readUsers();
-  const hash = users[username];
-  if (!hash) return false;
-  const [salt, storedKey] = hash.split(':');
-  try {
-    const derived = await scryptAsync(password, salt, 64);
-    return timingSafeEqual(derived, Buffer.from(storedKey, 'hex'));
-  } catch {
-    return false;
-  }
+  const stored = users[username];
+  if (!stored) return false;
+  return stored === computeHA1(username, password);
 }
 
 export async function addUser(username, password) {
-  if (!/^[a-zA-Z0-9_-]+$/.test(username)) throw new Error(`Ungültiger Benutzername: nur a-z, A-Z, 0-9, _ und - erlaubt.`);
+  if (!/^[a-zA-Z0-9_-]+$/.test(username)) throw new Error('Ungültiger Benutzername: nur a-z, A-Z, 0-9, _ und - erlaubt.');
   const users = await readUsers();
   if (users[username]) throw new Error(`Benutzer "${username}" existiert bereits.`);
-  users[username] = await hashPassword(password);
+  users[username] = computeHA1(username, password);
   await writeUsers(users);
 }
 
@@ -58,7 +56,7 @@ export async function removeUser(username) {
 export async function changePassword(username, newPassword) {
   const users = await readUsers();
   if (!users[username]) throw new Error(`Benutzer "${username}" nicht gefunden.`);
-  users[username] = await hashPassword(newPassword);
+  users[username] = computeHA1(username, newPassword);
   await writeUsers(users);
 }
 
