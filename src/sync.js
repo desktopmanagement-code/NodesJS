@@ -120,6 +120,12 @@ async function runSync() {
 }
 
 export function startSyncDaemon() {
+  if (process.platform !== 'linux') {
+    console.log('[sync] Nicht Linux – Sync-Daemon deaktiviert (kein mount -o loop verfügbar).');
+    console.log('[sync] WebDAV-Server läuft trotzdem vollständig.');
+    return;
+  }
+
   console.log(`[sync] Daemon gestartet – Intervall: ${INTERVAL_MS / 1000}s`);
   console.log(`[sync] Image:  ${IMAGE_FILE}`);
   console.log(`[sync] WebDAV: ${WEBDAV_DIR}`);
