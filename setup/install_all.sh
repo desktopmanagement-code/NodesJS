@@ -82,16 +82,47 @@ fi
 # ── 4. Node.js ────────────────────────────────────────────────────────────────
 step "3/7  Node.js"
 
+install_nodejs() {
+  apt-get update -qq
+  apt-get install -y curl ca-certificates gnupg
+
+  # Versuche NodeSource (unterstützt ältere Debian-Versionen besser)
+  DISTRO_CODENAME=$(lsb_release -cs 2>/dev/null || echo "")
+  NODESOURCE_OK=false
+
+  echo "  Versuche NodeSource..."
+  if curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - 2>&1 | grep -q "repository is set up"; then
+    NODESOURCE_OK=true
+  fi
+
+  if [ "$NODESOURCE_OK" = true ]; then
+    apt-get install -y nodejs
+  else
+    # Fallback: Debian-eigene Pakete (Trixie liefert Node.js 22+)
+    warn "NodeSource nicht verfügbar – verwende Debian-Paketquellen"
+    apt-get install -y nodejs npm
+  fi
+
+  # Version prüfen – muss >= 18 sein
+  NODE_MAJOR=$(node --version 2>/dev/null | sed 's/v//' | cut -d. -f1)
+  if [ -z "$NODE_MAJOR" ] || [ "$NODE_MAJOR" -lt 18 ]; then
+    err "Node.js >= 18 erforderlich, gefunden: $(node --version 2>/dev/null || echo 'nicht gefunden'). Bitte manuell installieren: https://nodejs.org"
+  fi
+}
+
 if command -v node &>/dev/null; then
-  ok "Node.js bereits installiert: $(node --version)"
+  NODE_MAJOR=$(node --version | sed 's/v//' | cut -d. -f1)
+  if [ "$NODE_MAJOR" -lt 18 ]; then
+    warn "Node.js $(node --version) ist zu alt – wird aktualisiert..."
+    install_nodejs
+  else
+    ok "Node.js bereits installiert: $(node --version)"
+  fi
 else
   warn "Node.js nicht gefunden – wird installiert..."
-  apt-get update -qq
-  apt-get install -y curl
-  curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - >/dev/null
-  apt-get install -y nodejs >/dev/null
-  ok "Node.js installiert: $(node --version)"
+  install_nodejs
 fi
+ok "Node.js: $(node --version)"
 
 # mkfs.fat für Image-Erstellung
 if ! command -v mkfs.fat &>/dev/null; then
