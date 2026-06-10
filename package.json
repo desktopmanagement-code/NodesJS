@@ -1,11 +1,12 @@
 {
-  "name": "nodesjs-mail-triage",
+  "name": "pi-webdav",
   "version": "1.0.0",
-  "description": "Mail routing and first-response assistant with LLM provider selection and feedback capture.",
-  "main": "src/server.js",
+  "description": "WebDAV server for Raspberry Pi with USB RNDIS gadget — no npm dependencies.",
   "type": "module",
+  "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "dev": "node --watch src/server.js",
+    "dev:mac": "PORT=8080 node --watch src/server.js"
   }
 }
